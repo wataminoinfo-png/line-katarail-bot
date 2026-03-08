@@ -23,6 +23,10 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
+# ── ユーザーごとの会話履歴（最大10往復保持） ──
+conversation_history = {}
+MAX_HISTORY = 20  # メッセージ数上限（10往復分）
+
 # === EVIDENCE_SECTION_START ===
 EVIDENCE = """
 --- [凍結肩] PMC7901130_凍結肩_最小侵襲治療_総合レビュー.md ---
@@ -468,16 +472,32 @@ A. 関節機構  B. 神経系  C. 滑走系  D. 出力制御
 """ + f"\n【参考文献データ】\n{EVIDENCE}\n"
 
 
-def ask_claude(user_message: str) -> str:
-    """ユーザーのメッセージをClaudeに投げて回答を得る"""
+def ask_claude(user_id: str, user_message: str) -> str:
+    """ユーザーの会話履歴を保持しながらClaudeに投げて回答を得る"""
+    # 履歴がなければ初期化
+    if user_id not in conversation_history:
+        conversation_history[user_id] = []
+
+    # 今回のメッセージを履歴に追加
+    conversation_history[user_id].append({"role": "user", "content": user_message})
+
+    # 上限を超えたら古いものから削除（最新MAX_HISTORY件を保持）
+    if len(conversation_history[user_id]) > MAX_HISTORY:
+        conversation_history[user_id] = conversation_history[user_id][-MAX_HISTORY:]
+
     try:
         response = anthropic_client.messages.create(
-            model="claude-haiku-4-5-20251001",  # 高速・低コストモデル
+            model="claude-haiku-4-5-20251001",
             max_tokens=600,
             system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_message}],
+            messages=conversation_history[user_id],
         )
-        return response.content[0].text
+        reply = response.content[0].text
+
+        # Claudeの返答も履歴に追加
+        conversation_history[user_id].append({"role": "assistant", "content": reply})
+
+        return reply
     except Exception as e:
         print(f"Claude APIエラー: {e}")
         return "申し訳ありません、現在回答を生成できませんでした。少し時間をおいて再度お試しください。"
@@ -503,8 +523,9 @@ def handle_message(event):
     user_text = event.message.text
     print(f"受信メッセージ: {user_text}")
 
-    # Claudeに質問して回答を生成
-    reply_text = ask_claude(user_text)
+    # Claudeに質問して回答を生成（ユーザーIDで履歴管理）
+    user_id = event.source.user_id
+    reply_text = ask_claude(user_id, user_text)
     print(f"返信内容: {reply_text}")
 
     # LINEに返信を送る
