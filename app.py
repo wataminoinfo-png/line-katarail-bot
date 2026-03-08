@@ -60,8 +60,26 @@ SYSTEM_PROMPT = """
 """ + EVIDENCE
 
 
-# ── 状態管理 ──
-user_state = {}
+# ── 状態管理（ファイル永続化） ──
+import json
+
+STATE_FILE = "/tmp/user_state.json"
+
+def load_state():
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_state(state):
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"状態保存エラー: {e}")
+
+user_state = load_state()
 
 STATE_START = "start"
 STATE_ASK_BODY_PART = "ask_body_part"
@@ -187,6 +205,7 @@ def generate_clinician_response(state):
 def handle_conversation(user_id, user_text):
     if user_id not in user_state:
         user_state[user_id] = {"step": STATE_START}
+        save_state(user_state)
 
     state = user_state[user_id]
     step = state["step"]
@@ -201,13 +220,16 @@ def handle_conversation(user_id, user_text):
             if body_part:
                 state["body_part"] = body_part
                 state["step"] = STATE_ASK_DURATION
+                save_state(user_state)
                 return "痛みはいつ頃から始まりましたか？\n①1ヶ月以内\n②1〜6ヶ月\n③6ヶ月以上"
             state["step"] = STATE_ASK_BODY_PART
+            save_state(user_state)
             return "肩と肘、どちらのお悩みですか？\n①肩（五十肩・凍結肩など）\n②肘（テニス肘・内側・外側の痛みなど）"
 
         elif user_type == "clinician":
             state["type"] = "clinician"
             state["step"] = STATE_ASK_CLINICIAN
+            save_state(user_state)
             return "ありがとうございます。どちらのご関心ですか？\n①患者さんへの説明ツールとして使いたい\n②臨床の思考体系として学びたい"
 
         else:
@@ -219,6 +241,7 @@ def handle_conversation(user_id, user_text):
         if body_part:
             state["body_part"] = body_part
             state["step"] = STATE_ASK_DURATION
+            save_state(user_state)
             return "痛みはいつ頃から始まりましたか？\n①1ヶ月以内\n②1〜6ヶ月\n③6ヶ月以上"
         return "肩と肘、どちらのお悩みですか？\n①肩（五十肩・凍結肩など）\n②肘（テニス肘・内側・外側の痛みなど）"
 
@@ -228,6 +251,7 @@ def handle_conversation(user_id, user_text):
         if duration:
             state["duration"] = duration
             state["step"] = STATE_ASK_DOCTOR
+            save_state(user_state)
             return "病院には行きましたか？\n①行った\n②まだ行っていない"
         return "痛みはいつ頃から始まりましたか？\n①1ヶ月以内\n②1〜6ヶ月\n③6ヶ月以上"
 
@@ -238,6 +262,7 @@ def handle_conversation(user_id, user_text):
             state["doctor"] = doctor
             reply = generate_patient_response(state)
             user_state[user_id] = {"step": STATE_START}
+            save_state(user_state)
             return reply
         return "病院には行きましたか？\n①行った\n②まだ行っていない"
 
@@ -248,11 +273,13 @@ def handle_conversation(user_id, user_text):
             state["interest"] = interest
             reply = generate_clinician_response(state)
             user_state[user_id] = {"step": STATE_START}
+            save_state(user_state)
             return reply
         return "どちらのご関心ですか？\n①患者さんへの説明ツールとして使いたい\n②臨床の思考体系として学びたい"
 
     # 想定外 → リセット
     user_state[user_id] = {"step": STATE_START}
+    save_state(user_state)
     return "はじめまして！カタレール公式LINEです。\nまず教えてください。\n①患者さん・一般の方\n②治療家・医療専門職の方"
 
 
