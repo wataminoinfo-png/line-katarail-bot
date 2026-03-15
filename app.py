@@ -1,5 +1,6 @@
 import os
-import anthropic
+import json
+import re
 from flask import Flask, request, abort
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -16,53 +17,47 @@ app = Flask(__name__)
 
 LINE_CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
 LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
-anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-# === EVIDENCE_SECTION_START ===
-EVIDENCE = """
---- [凍結肩] PMC7901130 ---
-・一般人口の2〜5%、糖尿病患者では20%に罹患
-・「自然治癒する」は古い概念。長期残存・不完全回復の例が多い
-・複合治療（ステロイド注射＋物理療法）が単独より有効な可能性
+PDF_URL = "https://drive.google.com/file/d/1OaYExf0Bvn7HA-ZC4UE3mdSnD3Ot4au8/view?usp=sharing"
 
---- [凍結肩] PMC5384535 ---
-・物理療法が早期の第一選択肢
-・ステロイド関節内注射は経口投与より優れた効果（RCTで確認）
-・「普遍的に有効なプロトコルは存在しない」
+# ── コンテンツ読み込み ──
+CONTENT_DIR = os.path.join(os.path.dirname(__file__), "content")
 
---- [肘疾患] PMC8888180 ---
-・ステロイド注射：短期（6週以内）は有効だが、中長期では効果消失
-・理学療法・PRP・自己血液注射いずれも、プラセボとの有意差は限定的
-"""
-# === EVIDENCE_SECTION_END ===
+def load_content(filename):
+    path = os.path.join(CONTENT_DIR, filename)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception as e:
+        print(f"コンテンツ読み込みエラー: {e}")
+        return {}
+    result = {}
+    matches = re.findall(r'\[(\w+)\]\s*---内容---\s*(.*?)\s*---ここまで---', text, re.DOTALL)
+    for key, value in matches:
+        result[key] = value.strip()
+    return result
 
-SYSTEM_PROMPT = """
-あなたは「回復ナビゲーター」公式LINEのアシスタントです。
-運営者は理学療法士・CSCSのわたなべみのるです。
+Q = load_content("questions.txt")
+R = load_content("responses.txt")
 
-【基本思想】
-- 痛みの回復過程を「レール（路線図）」に見立て、患者が今どこにいるかを整理する
-- 医療と患者の間の「翻訳者」として、構造的に分かりやすく伝える
-- 治療を否定せず、医師を否定せず、補完する立ち位置を崩さない
-- 診断・処方はしない。「研究では〜とされています」という表現でエビデンスを引用する
+def get_response(key):
+    cta = R.get("CTA", "")
+    cta_paid = R.get("CTA_PAID", "")
+    text = R.get(key, "")
+    return text.replace("{CTA}", cta).replace("{CTA_PAID}", cta_paid)
 
-【回答スタイル】
-- 200〜350文字でコンパクトに
-- まず共感、次に構造的な説明、最後にサービス誘導（1文）
-- 患者向け誘導：「単発相談（3,500円・20〜30分）で道筋をお話しできます」
-- 治療家向け誘導：「勉強会や個別コンサルもご活用ください」
+# ── 状態定義 ──
+STATE_WAIT_READ = "wait_read"
+STATE_BRANCH    = "branch"
+STATE_Q1        = "q1"
+STATE_Q2        = "q2"
+STATE_Q3        = "q3"
+STATE_START     = "start"
 
-【エビデンス】
-""" + EVIDENCE
-
-
-# ── 状態管理（ファイル永続化） ──
-import json
-
+# ── 状態管理 ──
 STATE_FILE = "/tmp/user_state.json"
 
 def load_state():
@@ -81,185 +76,42 @@ def save_state(state):
 
 user_state = load_state()
 
-STATE_START = "start"
-STATE_PDF_FOLLOWUP = "pdf_followup"
-STATE_ASK_BODY_PART = "ask_body_part"
-STATE_ASK_DURATION = "ask_duration"
-STATE_ASK_DOCTOR = "ask_doctor"
-STATE_ASK_CLINICIAN = "ask_clinician"
-
-PDF_URL = "https://drive.google.com/file/d/1OaYExf0Bvn7HA-ZC4UE3mdSnD3Ot4au8/view?usp=sharing"
-
-WELCOME_MESSAGE = f"""登録ありがとうございます！
-
-カタレール公式LINEへようこそ。
-まず特典PDFをお受け取りください👇
-{PDF_URL}
-
-PDFを読んだら、今のあなたに一番近いものを送ってください。
-
-① なんとなく違和感があるが、うまく説明できない
-② 検査では異常なしと言われたが痛みが続く
-③ もう色々やって疲れてしまった"""
-
-PDF_CHECK_RESPONSES = {{
-    "mismatch": """「なんか違う気がするけど、うまく言えない」。その感覚は正しいです。
-
-医療者はデータや構造で話し、あなたは体の体験で話しています。この言葉のズレが続くと、違和感だけが積み重なり、次の一手が選べなくなります。
-
-「何が違和感なのか」を一緒に整理することが、最初の一手です。
-
-改めて確認させてください。
-①患者さん・一般の方
-②治療家・医療専門職の方""",
-
-    "blind_spot": """「異常なし」なのに痛い。その矛盾は本物です。
-
-検査は静止した状態を見ます。でも体の問題は「動きの中」にあることが多い。今の観測手段では見えていないだけで、止まっている場所は必ずあります。
-
-現在地を一緒に探しましょう。
-
-改めて確認させてください。
-①患者さん・一般の方
-②治療家・医療専門職の方""",
-
-    "exhaustion": """長く戦ってきたんですね。疲れて当然です。
-
-「もう無理かも」という感覚は意志の弱さではなく、燃料切れのサインです。回復には資源（気力・時間・信念）が必要で、それが尽きると正しい情報があっても動けません。
-
-今は補充のタイミングかもしれません。
-
-改めて確認させてください。
-①患者さん・一般の方
-②治療家・医療専門職の方""",
-}}
-
-
-def detect_pdf_check(text):
-    t = text.strip()
-    if t in ["1", "①", "１"]:
-        return "mismatch"
-    if t in ["2", "②", "２"]:
-        return "blind_spot"
-    if t in ["3", "③", "３"]:
-        return "exhaustion"
+# ── 検出関数 ──
+def detect_branch(text):
+    if any(kw in text for kw in ["現在地", "チェック", "check", "Check"]):
+        return "check"
+    if any(kw in text for kw in ["相談", "したい", "話したい", "聞きたい"]):
+        return "consult"
     return None
 
-
-def detect_type(text):
-    clinician_kw = ["治療家", "理学療法士", "柔道整復師", "トレーナー", "セラピスト",
-                    "PT", "制限発生点", "操作体系", "臨床", "施術", "医療者", "医療職", "勉強会"]
-    patient_kw = ["患者", "痛い", "痛み", "肩", "肘", "五十肩", "凍結肩", "テニス肘",
-                  "リハビリ", "病院", "しびれ", "動かない", "固い", "硬い"]
-    for kw in clinician_kw:
-        if kw in text:
-            return "clinician"
-    if text.strip() in ["2", "②", "２"]:
-        return "clinician"
-    if text.strip() in ["1", "①", "１"]:
-        return "patient"
-    for kw in patient_kw:
-        if kw in text:
-            return "patient"
+def detect_hospital(text):
+    if any(kw in text for kw in ["行った", "行きました", "はい", "受診", "した", "Yes", "yes"]):
+        return "yes"
+    if any(kw in text for kw in ["まだ", "いいえ", "行ってない", "行っていない", "ない", "no", "No"]):
+        return "no"
     return None
 
-
-def detect_body_part(text):
-    if any(kw in text for kw in ["肩", "五十肩", "凍結肩", "1", "①", "１"]):
-        return "shoulder"
-    if any(kw in text for kw in ["肘", "テニス肘", "2", "②", "２", "内側", "外側"]):
-        return "elbow"
+def detect_concern(text):
+    if any(kw in text for kw in ["治る気", "治らない", "希望がない", "先が見えない"]):
+        return "hopeless"
+    if any(kw in text for kw in ["正解", "わからない", "矛盾", "違う", "どれが", "混乱"]):
+        return "confused"
+    if any(kw in text for kw in ["変化なし", "変わらない", "変化がない", "効かない", "治療した", "変化なかった"]):
+        return "no_change"
+    if any(kw in text for kw in ["その他", "other", "別", "該当しない"]):
+        return "other"
     return None
 
+RESPONSE_MAP = {
+    ("yes", "hopeless"):  "R_HOSPITAL_HOPELESS",
+    ("yes", "confused"):  "R_HOSPITAL_CONFUSED",
+    ("yes", "no_change"): "R_HOSPITAL_NO_CHANGE",
+    ("no",  "hopeless"):  "R_NO_HOSPITAL_HOPELESS",
+    ("no",  "confused"):  "R_NO_HOSPITAL_CONFUSED",
+    ("no",  "no_change"): "R_NO_HOSPITAL_NO_CHANGE",
+}
 
-def detect_duration(text):
-    if any(kw in text for kw in ["1", "①", "１", "1ヶ月", "1か月", "先月", "最近", "急に", "急"]):
-        return "acute"
-    if any(kw in text for kw in ["2", "②", "２", "2ヶ月", "3ヶ月", "4ヶ月", "5ヶ月", "6ヶ月", "半年"]):
-        return "subacute"
-    if any(kw in text for kw in ["3", "③", "３", "7ヶ月", "8ヶ月", "9ヶ月", "1年", "2年", "長い", "ずっと", "何年"]):
-        return "chronic"
-    return None
-
-
-def detect_doctor(text):
-    if any(kw in text for kw in ["1", "①", "１", "行った", "行きました", "はい", "受診", "診て"]):
-        return True
-    if any(kw in text for kw in ["2", "②", "２", "まだ", "いいえ", "行ってない", "行っていない", "ない"]):
-        return False
-    return None
-
-
-def detect_clinician_interest(text):
-    if any(kw in text for kw in ["1", "①", "１", "患者", "説明", "ツール"]):
-        return "patient_education"
-    if any(kw in text for kw in ["2", "②", "２", "臨床", "思考", "学び", "体系", "技術"]):
-        return "clinical_thinking"
-    return None
-
-
-def ask_claude_direct(prompt):
-    try:
-        response = anthropic_client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=600,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.content[0].text
-    except Exception as e:
-        print(f"Claude APIエラー: {e}")
-        return "申し訳ありません、現在回答を生成できませんでした。少し時間をおいて再度お試しください。"
-
-
-def generate_patient_response(state):
-    body_part = "肩（凍結肩・五十肩）" if state["body_part"] == "shoulder" else "肘（テニス肘・上顆炎など）"
-    duration_map = {
-        "acute": "1ヶ月以内（急性期）",
-        "subacute": "1〜6ヶ月（亜急性期・拘縮期）",
-        "chronic": "6ヶ月以上（慢性期・回復期）"
-    }
-    duration = duration_map[state["duration"]]
-    doctor = "受診済み" if state["doctor"] else "未受診"
-
-    prompt = f"""
-患者情報：
-- 部位：{body_part}
-- 期間：{duration}
-- 受診状況：{doctor}
-
-この患者さんに対して回復ナビゲーターとして回答してください。
-①現在の病期・状態を構造的に説明
-②この時期に大切なこと・注意点
-③次のステップ
-④最後に単発相談への自然な誘導（1文のみ）
-
-200〜350文字でまとめてください。
-"""
-    return ask_claude_direct(prompt)
-
-
-def generate_clinician_response(state):
-    interest_map = {
-        "patient_education": "患者への説明ツール・カタレールの活用",
-        "clinical_thinking": "制限発生点・操作体系の臨床統合"
-    }
-    interest = interest_map[state["interest"]]
-
-    prompt = f"""
-治療家からの問い合わせ：
-- 関心：{interest}
-
-回復ナビゲーターとして回答してください。
-①その関心に対する具体的な価値・活用方法
-②次のステップとして何ができるか
-③勉強会や個別コンサルへの自然な誘導（1文のみ）
-
-200〜350文字でまとめてください。
-"""
-    return ask_claude_direct(prompt)
-
-
+# ── 会話ハンドラ ──
 def handle_conversation(user_id, user_text):
     if user_id not in user_state:
         user_state[user_id] = {"step": STATE_START}
@@ -268,105 +120,77 @@ def handle_conversation(user_id, user_text):
     state = user_state[user_id]
     step = state["step"]
 
-    # PDF特典後のミニチェック応答
-    if step == STATE_PDF_FOLLOWUP:
-        check = detect_pdf_check(user_text)
-        if check:
-            reply = PDF_CHECK_RESPONSES[check]
+    # 「読んだ」待ち
+    if step == STATE_WAIT_READ:
+        if any(kw in user_text for kw in ["読んだ", "読みました", "みた", "見た", "ok", "OK", "はい", "よんだ"]):
+            user_state[user_id]["step"] = STATE_BRANCH
+            save_state(user_state)
+            return Q.get("AFTER_PDF", "ありがとうございます。\n「現在地チェック」または「相談したい」と送ってください")
+        return "PDFを読み終わったら「読んだ」と返信してください。"
+
+    # 分岐
+    if step == STATE_BRANCH:
+        branch = detect_branch(user_text)
+        if branch == "check":
+            user_state[user_id]["step"] = STATE_Q1
+            save_state(user_state)
+            return Q.get("Q1", "肩の痛みはいつ頃から始まりましたか？（自由に書いてください）")
+        if branch == "consult":
             user_state[user_id] = {"step": STATE_START}
             save_state(user_state)
-            return reply
-        # ①②③以外が来た場合はそのまま通常フローへ
+            return get_response("R_OTHER")
+        return "「現在地チェック」または「相談したい」と送ってください"
+
+    # Q1（自由記載 → 自動でQ2へ）
+    if step == STATE_Q1:
+        user_state[user_id]["q1"] = user_text
+        user_state[user_id]["step"] = STATE_Q2
+        save_state(user_state)
+        return Q.get("Q2", "整形外科などの病院には行きましたか？\n「行った」または「まだ」と返信してください")
+
+    # Q2
+    if step == STATE_Q2:
+        hospital = detect_hospital(user_text)
+        if hospital:
+            user_state[user_id]["hospital"] = hospital
+            user_state[user_id]["step"] = STATE_Q3
+            save_state(user_state)
+            return Q.get("Q3", "今一番困っていることを教えてください。\n「治る気がしない」\n「何が正解かわからない」\n「治療したが変化なし」\n「その他」")
+        return "「行った」または「まだ」と返信してください"
+
+    # Q3
+    if step == STATE_Q3:
+        concern = detect_concern(user_text)
+        hospital = state.get("hospital", "no")
         user_state[user_id] = {"step": STATE_START}
         save_state(user_state)
-        state = user_state[user_id]
-        step = STATE_START
-
-    # START
-    if step == STATE_START:
-        user_type = detect_type(user_text)
-
-        if user_type == "patient":
-            state["type"] = "patient"
-            body_part = detect_body_part(user_text)
-            if body_part:
-                state["body_part"] = body_part
-                state["step"] = STATE_ASK_DURATION
-                save_state(user_state)
-                return "痛みはいつ頃から始まりましたか？\n①1ヶ月以内\n②1〜6ヶ月\n③6ヶ月以上"
-            state["step"] = STATE_ASK_BODY_PART
-            save_state(user_state)
-            return "肩と肘、どちらのお悩みですか？\n①肩（五十肩・凍結肩など）\n②肘（テニス肘・内側・外側の痛みなど）"
-
-        elif user_type == "clinician":
-            state["type"] = "clinician"
-            state["step"] = STATE_ASK_CLINICIAN
-            save_state(user_state)
-            return "ありがとうございます。どちらのご関心ですか？\n①患者さんへの説明ツールとして使いたい\n②臨床の思考体系として学びたい"
-
-        else:
-            return "はじめまして！カタレール公式LINEです。\nまず教えてください。\n①患者さん・一般の方\n②治療家・医療専門職の方"
-
-    # 患者：部位確認
-    elif step == STATE_ASK_BODY_PART:
-        body_part = detect_body_part(user_text)
-        if body_part:
-            state["body_part"] = body_part
-            state["step"] = STATE_ASK_DURATION
-            save_state(user_state)
-            return "痛みはいつ頃から始まりましたか？\n①1ヶ月以内\n②1〜6ヶ月\n③6ヶ月以上"
-        return "肩と肘、どちらのお悩みですか？\n①肩（五十肩・凍結肩など）\n②肘（テニス肘・内側・外側の痛みなど）"
-
-    # 患者：期間確認
-    elif step == STATE_ASK_DURATION:
-        duration = detect_duration(user_text)
-        if duration:
-            state["duration"] = duration
-            state["step"] = STATE_ASK_DOCTOR
-            save_state(user_state)
-            return "病院には行きましたか？\n①行った\n②まだ行っていない"
-        return "痛みはいつ頃から始まりましたか？\n①1ヶ月以内\n②1〜6ヶ月\n③6ヶ月以上"
-
-    # 患者：受診確認 → 最終回答
-    elif step == STATE_ASK_DOCTOR:
-        doctor = detect_doctor(user_text)
-        if doctor is not None:
-            state["doctor"] = doctor
-            reply = generate_patient_response(state)
-            user_state[user_id] = {"step": STATE_START}
-            save_state(user_state)
-            return reply
-        return "病院には行きましたか？\n①行った\n②まだ行っていない"
-
-    # 治療家：関心確認 → 最終回答
-    elif step == STATE_ASK_CLINICIAN:
-        interest = detect_clinician_interest(user_text)
-        if interest:
-            state["interest"] = interest
-            reply = generate_clinician_response(state)
-            user_state[user_id] = {"step": STATE_START}
-            save_state(user_state)
-            return reply
-        return "どちらのご関心ですか？\n①患者さんへの説明ツールとして使いたい\n②臨床の思考体系として学びたい"
+        if concern is None or concern == "other":
+            return get_response("R_OTHER")
+        key = RESPONSE_MAP.get((hospital, concern))
+        return get_response(key) if key else get_response("R_OTHER")
 
     # 想定外 → リセット
     user_state[user_id] = {"step": STATE_START}
     save_state(user_state)
-    return "はじめまして！カタレール公式LINEです。\nまず教えてください。\n①患者さん・一般の方\n②治療家・医療専門職の方"
+    return "カタレール公式LINEです。\nお気軽にメッセージをどうぞ。"
 
 
 @handler.add(FollowEvent)
 def handle_follow(event):
     user_id = event.source.user_id
-    user_state[user_id] = {"step": STATE_PDF_FOLLOWUP}
+    user_state[user_id] = {"step": STATE_WAIT_READ}
     save_state(user_state)
+
+    pdf_msg = Q.get("PDF_MESSAGE", "").replace("{PDF_URL}", PDF_URL)
+    if not pdf_msg:
+        pdf_msg = f"カタレール公式LINEへようこそ。\nまず無料特典のPDFをお受け取りください👇\n{PDF_URL}\n\n読み終わったら「読んだ」と返信してください。"
 
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
         line_bot_api.reply_message_with_http_info(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
-                messages=[TextMessage(text=WELCOME_MESSAGE)],
+                messages=[TextMessage(text=pdf_msg)],
             )
         )
 
