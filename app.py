@@ -10,7 +10,7 @@ from linebot.v3.messaging import (
     ReplyMessageRequest,
     TextMessage,
 )
-from linebot.v3.webhooks import MessageEvent, TextMessageContent
+from linebot.v3.webhooks import MessageEvent, TextMessageContent, FollowEvent
 
 app = Flask(__name__)
 
@@ -82,10 +82,68 @@ def save_state(state):
 user_state = load_state()
 
 STATE_START = "start"
+STATE_PDF_FOLLOWUP = "pdf_followup"
 STATE_ASK_BODY_PART = "ask_body_part"
 STATE_ASK_DURATION = "ask_duration"
 STATE_ASK_DOCTOR = "ask_doctor"
 STATE_ASK_CLINICIAN = "ask_clinician"
+
+PDF_URL = "https://drive.google.com/file/d/1OaYExf0Bvn7HA-ZC4UE3mdSnD3Ot4au8/view?usp=sharing"
+
+WELCOME_MESSAGE = f"""登録ありがとうございます！
+
+カタレール公式LINEへようこそ。
+まず特典PDFをお受け取りください👇
+{PDF_URL}
+
+PDFを読んだら、今のあなたに一番近いものを送ってください。
+
+① なんとなく違和感があるが、うまく説明できない
+② 検査では異常なしと言われたが痛みが続く
+③ もう色々やって疲れてしまった"""
+
+PDF_CHECK_RESPONSES = {{
+    "mismatch": """「なんか違う気がするけど、うまく言えない」。その感覚は正しいです。
+
+医療者はデータや構造で話し、あなたは体の体験で話しています。この言葉のズレが続くと、違和感だけが積み重なり、次の一手が選べなくなります。
+
+「何が違和感なのか」を一緒に整理することが、最初の一手です。
+
+改めて確認させてください。
+①患者さん・一般の方
+②治療家・医療専門職の方""",
+
+    "blind_spot": """「異常なし」なのに痛い。その矛盾は本物です。
+
+検査は静止した状態を見ます。でも体の問題は「動きの中」にあることが多い。今の観測手段では見えていないだけで、止まっている場所は必ずあります。
+
+現在地を一緒に探しましょう。
+
+改めて確認させてください。
+①患者さん・一般の方
+②治療家・医療専門職の方""",
+
+    "exhaustion": """長く戦ってきたんですね。疲れて当然です。
+
+「もう無理かも」という感覚は意志の弱さではなく、燃料切れのサインです。回復には資源（気力・時間・信念）が必要で、それが尽きると正しい情報があっても動けません。
+
+今は補充のタイミングかもしれません。
+
+改めて確認させてください。
+①患者さん・一般の方
+②治療家・医療専門職の方""",
+}}
+
+
+def detect_pdf_check(text):
+    t = text.strip()
+    if t in ["1", "①", "１"]:
+        return "mismatch"
+    if t in ["2", "②", "２"]:
+        return "blind_spot"
+    if t in ["3", "③", "３"]:
+        return "exhaustion"
+    return None
 
 
 def detect_type(text):
@@ -210,6 +268,20 @@ def handle_conversation(user_id, user_text):
     state = user_state[user_id]
     step = state["step"]
 
+    # PDF特典後のミニチェック応答
+    if step == STATE_PDF_FOLLOWUP:
+        check = detect_pdf_check(user_text)
+        if check:
+            reply = PDF_CHECK_RESPONSES[check]
+            user_state[user_id] = {"step": STATE_START}
+            save_state(user_state)
+            return reply
+        # ①②③以外が来た場合はそのまま通常フローへ
+        user_state[user_id] = {"step": STATE_START}
+        save_state(user_state)
+        state = user_state[user_id]
+        step = STATE_START
+
     # START
     if step == STATE_START:
         user_type = detect_type(user_text)
@@ -281,6 +353,22 @@ def handle_conversation(user_id, user_text):
     user_state[user_id] = {"step": STATE_START}
     save_state(user_state)
     return "はじめまして！カタレール公式LINEです。\nまず教えてください。\n①患者さん・一般の方\n②治療家・医療専門職の方"
+
+
+@handler.add(FollowEvent)
+def handle_follow(event):
+    user_id = event.source.user_id
+    user_state[user_id] = {"step": STATE_PDF_FOLLOWUP}
+    save_state(user_state)
+
+    with ApiClient(configuration) as api_client:
+        line_bot_api = MessagingApi(api_client)
+        line_bot_api.reply_message_with_http_info(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[TextMessage(text=WELCOME_MESSAGE)],
+            )
+        )
 
 
 @app.route("/callback", methods=["POST"])
