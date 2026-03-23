@@ -200,6 +200,12 @@ def handle_conversation(user_id, user_text):
         key = RESPONSE_MAP.get((hospital, concern))
         return get_response(key) if key else get_response("R_OTHER")
 
+    # どのステップでも「相談したい」→ 無料相談モードへ
+    if any(kw in user_text for kw in ["相談", "したい", "話したい", "聞きたい"]):
+        user_state[user_id] = {"step": STATE_CONSULT}
+        save_state(user_state)
+        return R.get("R_CONSULT_START", "はじめまして、PTのるです。どんなことでお悩みですか？")
+
     # 想定外 → リセット
     user_state[user_id] = {"step": STATE_START}
     save_state(user_state)
