@@ -243,13 +243,39 @@ def handle_message(event):
     user_id = event.source.user_id
     print(f"受信: {user_id} → {user_text}")
 
-    # 管理者の「自動解除」コマンド処理
-    if user_text.strip() == "自動解除":
-        target = last_user_id["id"]
-        if target and target in user_state:
+    # 管理者コマンド処理
+    parts = user_text.strip().split()
+    if parts[0] == "自動解除":
+        # IDが指定されていればそのユーザー、なければ直前のユーザー
+        if len(parts) >= 2:
+            target = parts[1]
+        else:
+            target = last_user_id["id"]
+        if target:
             user_state[target] = {"step": STATE_MANUAL}
             save_state(user_state)
             reply_text = f"手動対応モードに切り替えました。\n対象: {target[:8]}..."
+        else:
+            reply_text = "対象ユーザーが見つかりませんでした。"
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            line_bot_api.reply_message_with_http_info(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=reply_text)],
+                )
+            )
+        return
+
+    if parts[0] == "自動再開":
+        if len(parts) >= 2:
+            target = parts[1]
+        else:
+            target = last_user_id["id"]
+        if target:
+            user_state[target] = {"step": STATE_POST_CONSULT}
+            save_state(user_state)
+            reply_text = f"自動対応モードに戻しました。\n対象: {target[:8]}..."
         else:
             reply_text = "対象ユーザーが見つかりませんでした。"
         with ApiClient(configuration) as api_client:
