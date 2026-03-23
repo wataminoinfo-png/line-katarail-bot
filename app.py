@@ -59,9 +59,13 @@ STATE_Q3        = "q3"
 STATE_START     = "start"
 STATE_CONSULT      = "consult"       # 手動対応モード
 STATE_POST_CONSULT = "post_consult"  # 有料誘導モード
+STATE_MANUAL       = "manual"        # 自動解除モード（完全手動）
 
-# 管理者のユーザーID（「有料相談」コマンドを送れるのは管理者のみ）
+# 管理者のユーザーID
 ADMIN_USER_ID = os.environ.get("ADMIN_USER_ID", "")
+
+# 直前にメッセージを送ってきたユーザーIDを記録
+last_user_id = {"id": None}
 
 # ── 状態管理 ──
 STATE_FILE = "/tmp/user_state.json"
@@ -158,6 +162,10 @@ def handle_conversation(user_id, user_text):
             return get_response("CTA_PAID")
         return None  # 手動対応中はボットは返信しない
 
+    # 完全手動モード（自動返信なし）
+    if step == STATE_MANUAL:
+        return None
+
     # 有料誘導モード（何を送っても支払いリンクを案内）
     if step == STATE_POST_CONSULT:
         if any(kw in user_text for kw in ["相談", "したい", "話したい", "聞きたい"]):
@@ -234,6 +242,28 @@ def handle_message(event):
     user_text = event.message.text
     user_id = event.source.user_id
     print(f"受信: {user_id} → {user_text}")
+
+    # 管理者の「自動解除」コマンド処理
+    if user_text.strip() == "自動解除":
+        target = last_user_id["id"]
+        if target and target in user_state:
+            user_state[target] = {"step": STATE_MANUAL}
+            save_state(user_state)
+            reply_text = f"手動対応モードに切り替えました。\n対象: {target[:8]}..."
+        else:
+            reply_text = "対象ユーザーが見つかりませんでした。"
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            line_bot_api.reply_message_with_http_info(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=reply_text)],
+                )
+            )
+        return
+
+    # 管理者以外のメッセージは直前ユーザーIDを更新
+    last_user_id["id"] = user_id
 
     reply_text = handle_conversation(user_id, user_text)
     print(f"返信: {reply_text}")
