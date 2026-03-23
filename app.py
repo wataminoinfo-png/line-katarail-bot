@@ -57,7 +57,8 @@ STATE_Q1        = "q1"
 STATE_Q2        = "q2"
 STATE_Q3        = "q3"
 STATE_START     = "start"
-STATE_CONSULT   = "consult"  # 手動対応モード
+STATE_CONSULT      = "consult"       # 手動対応モード
+STATE_POST_CONSULT = "post_consult"  # 有料誘導モード
 
 # 管理者のユーザーID（「有料相談」コマンドを送れるのは管理者のみ）
 ADMIN_USER_ID = os.environ.get("ADMIN_USER_ID", "")
@@ -152,10 +153,16 @@ def handle_conversation(user_id, user_text):
         user_state[user_id]["consult_count"] = count
         save_state(user_state)
         if count >= 3:
-            user_state[user_id] = {"step": STATE_START}
+            user_state[user_id] = {"step": STATE_POST_CONSULT}
             save_state(user_state)
             return get_response("CTA_PAID")
         return None  # 手動対応中はボットは返信しない
+
+    # 有料誘導モード（何を送っても支払いリンクを案内）
+    if step == STATE_POST_CONSULT:
+        if any(kw in user_text for kw in ["相談", "したい", "話したい", "聞きたい"]):
+            return get_response("CTA_PAID")
+        return get_response("R_NUDGE_PAID")
 
     # Q1（自由記載 → 自動でQ2へ）
     if step == STATE_Q1:
