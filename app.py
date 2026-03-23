@@ -263,8 +263,18 @@ def handle_message(event):
 
     # 管理者コマンド処理
     parts = user_text.strip().split()
+
+    def find_target(parts, prefer_states):
+        """IDが指定されていればそのID、なければ指定ステートのユーザーを探す"""
+        if len(parts) >= 2:
+            return parts[1]
+        for uid, st in user_state.items():
+            if uid != user_id and st.get("step") in prefer_states:
+                return uid
+        return None
+
     if parts[0] == "自動解除":
-        target = parts[1] if len(parts) >= 2 else load_last_user()
+        target = find_target(parts, [STATE_CONSULT, STATE_POST_CONSULT, STATE_BRANCH, STATE_Q1, STATE_Q2, STATE_Q3])
         if target:
             user_state[target] = {"step": STATE_MANUAL}
             save_state(user_state)
@@ -282,7 +292,7 @@ def handle_message(event):
         return
 
     if parts[0] == "自動再開":
-        target = parts[1] if len(parts) >= 2 else load_last_user()
+        target = find_target(parts, [STATE_MANUAL])
         if target:
             user_state[target] = {"step": STATE_POST_CONSULT}
             save_state(user_state)
@@ -298,9 +308,6 @@ def handle_message(event):
                 )
             )
         return
-
-    # コマンド以外のメッセージは直前ユーザーIDをファイルに保存
-    save_last_user(user_id)
 
     reply_text = handle_conversation(user_id, user_text)
     print(f"返信: {reply_text}")
