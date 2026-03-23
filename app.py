@@ -203,7 +203,7 @@ def handle_conversation(user_id, user_text):
     # 想定外 → リセット
     user_state[user_id] = {"step": STATE_START}
     save_state(user_state)
-    return "カタレール公式LINEです。\nお気軽にメッセージをどうぞ。"
+    return "ご相談その他のご回答ですね？「相談したい」と返信してください。\n最初からやり直したい場合は「読んだ」と入れてください。"
 
 
 @handler.add(FollowEvent)
