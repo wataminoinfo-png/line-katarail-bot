@@ -9,6 +9,7 @@ from linebot.v3.messaging import (
     ApiClient,
     MessagingApi,
     ReplyMessageRequest,
+    PushMessageRequest,
     TextMessage,
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent, FollowEvent
@@ -56,6 +57,10 @@ STATE_Q1        = "q1"
 STATE_Q2        = "q2"
 STATE_Q3        = "q3"
 STATE_START     = "start"
+STATE_CONSULT   = "consult"  # 手動対応モード
+
+# 管理者のユーザーID（「有料相談」コマンドを送れるのは管理者のみ）
+ADMIN_USER_ID = os.environ.get("ADMIN_USER_ID", "")
 
 # ── 状態管理 ──
 STATE_FILE = "/tmp/user_state.json"
@@ -136,10 +141,21 @@ def handle_conversation(user_id, user_text):
             save_state(user_state)
             return Q.get("Q1", "肩の痛みはいつ頃から始まりましたか？（自由に書いてください）")
         if branch == "consult":
+            user_state[user_id] = {"step": STATE_CONSULT}
+            save_state(user_state)
+            return R.get("R_CONSULT_START", "はじめまして、PTのるです。どんなことでお悩みですか？")
+        return "「現在地チェック」または「相談したい」と送ってください"
+
+    # 手動対応モード（3回メッセージ後に自動で支払いリンクを送信）
+    if step == STATE_CONSULT:
+        count = state.get("consult_count", 0) + 1
+        user_state[user_id]["consult_count"] = count
+        save_state(user_state)
+        if count >= 3:
             user_state[user_id] = {"step": STATE_START}
             save_state(user_state)
-            return get_response("R_OTHER")
-        return "「現在地チェック」または「相談したい」と送ってください"
+            return get_response("CTA_PAID")
+        return None  # 手動対応中はボットは返信しない
 
     # Q1（自由記載 → 自動でQ2へ）
     if step == STATE_Q1:
@@ -214,6 +230,9 @@ def handle_message(event):
 
     reply_text = handle_conversation(user_id, user_text)
     print(f"返信: {reply_text}")
+
+    if reply_text is None:
+        return
 
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
