@@ -64,11 +64,23 @@ STATE_MANUAL       = "manual"        # 自動解除モード（完全手動）
 # 管理者のユーザーID
 ADMIN_USER_ID = os.environ.get("ADMIN_USER_ID", "")
 
-# 直前にメッセージを送ってきたユーザーIDを記録
-last_user_id = {"id": None}
-
 # ── 状態管理 ──
-STATE_FILE = "/tmp/user_state.json"
+STATE_FILE   = "/tmp/user_state.json"
+LAST_USER_FILE = "/tmp/last_user.json"
+
+def load_last_user():
+    try:
+        with open(LAST_USER_FILE, "r", encoding="utf-8") as f:
+            return json.load(f).get("id")
+    except Exception:
+        return None
+
+def save_last_user(user_id):
+    try:
+        with open(LAST_USER_FILE, "w", encoding="utf-8") as f:
+            json.dump({"id": user_id}, f)
+    except Exception:
+        pass
 
 def load_state():
     try:
@@ -252,11 +264,7 @@ def handle_message(event):
     # 管理者コマンド処理
     parts = user_text.strip().split()
     if parts[0] == "自動解除":
-        # IDが指定されていればそのユーザー、なければ直前のユーザー
-        if len(parts) >= 2:
-            target = parts[1]
-        else:
-            target = last_user_id["id"]
+        target = parts[1] if len(parts) >= 2 else load_last_user()
         if target:
             user_state[target] = {"step": STATE_MANUAL}
             save_state(user_state)
@@ -274,10 +282,7 @@ def handle_message(event):
         return
 
     if parts[0] == "自動再開":
-        if len(parts) >= 2:
-            target = parts[1]
-        else:
-            target = last_user_id["id"]
+        target = parts[1] if len(parts) >= 2 else load_last_user()
         if target:
             user_state[target] = {"step": STATE_POST_CONSULT}
             save_state(user_state)
@@ -294,8 +299,8 @@ def handle_message(event):
             )
         return
 
-    # 管理者以外のメッセージは直前ユーザーIDを更新
-    last_user_id["id"] = user_id
+    # コマンド以外のメッセージは直前ユーザーIDをファイルに保存
+    save_last_user(user_id)
 
     reply_text = handle_conversation(user_id, user_text)
     print(f"返信: {reply_text}")
