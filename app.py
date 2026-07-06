@@ -107,8 +107,9 @@ def detect_check_keyword(text):
     return any(kw in text for kw in ["現在地", "チェック", "check", "Check"])
 
 def detect_yonda_keyword(text):
-    """「読んだ」系キーワード（旧ユーザー対策）"""
-    return any(kw in text for kw in ["読んだ", "読みました", "みた", "見た", "よんだ"])
+    """「読んだ」系キーワード（旧ユーザー対策）
+    ※「みた」「見た」は自由回答文に頻出するため含めない（誤発火防止）"""
+    return any(kw in text for kw in ["読んだ", "読みました", "よんだ"])
 
 def detect_consult_keyword(text):
     """「相談したい」系"""
@@ -132,15 +133,14 @@ def detect_type_from_q1(text):
     else:
         type_char = "c"
 
-    # タイプ文字と直後の助詞・区切り文字を除去して動作部分を取り出す
-    # 例: "Aで、服を着るとき" → "服を着るとき"
-    # 例: "B。夜横になると" → "夜横になると"
-    dousa = re.sub(
-        r'[AaBbCcＡＢＣａｂｃ][でにはをもがとのやでも、。,\s　]*',
-        '',
-        text,
-        count=1
-    ).strip()
+    # タイプ文字の前後から動作部分を取り出す
+    # 例: "Aで、服を着るとき" → "服を着るとき"（前置き型）
+    # 例: "夜、横になると痛い。Aです" → "夜、横になると痛い"（後置き型）
+    before = text[:pattern.start()]
+    after = text[pattern.end():]
+    after = re.sub(r'^(?:です|だ)?[でにはをもがとのや、。,．\s　]*', '', after)
+    before = before.strip('、。,．（(「 　')
+    dousa = (before + after).strip().strip('、。,．()（）「」 　')
 
     if not dousa:
         dousa = "その動作"
@@ -162,14 +162,17 @@ def handle_conversation(user_id, user_text):
     state = user_state[user_id]
     step = state["step"]
 
-    # ── 全状態共通：「読んだ」系キーワード（旧ユーザー対策） ──
-    if detect_yonda_keyword(user_text):
-        user_state[user_id] = {"step": STATE_START}
-        save_state(user_state)
+    # ── 完全手動モードは何より優先で沈黙（手動対応の横取り防止） ──
+    if step == STATE_MANUAL:
+        return None
+
+    # ── 「読んだ」系（旧ユーザー対策）：初期状態のときだけ反応 ──
+    if step == STATE_START and detect_yonda_keyword(user_text):
         return "ありがとうございます。「現在地」とひとこと送ってもらえれば、30秒チェックの続き（残り2問）を始めます。"
 
-    # ── 全状態共通：「現在地」または「チェック」→ Q1へ ──
-    if detect_check_keyword(user_text):
+    # ── 「現在地」「チェック」→ Q1へ（初期状態・有料誘導モードからのみ。
+    #    相談モード・Q1/Q2回答中の自由文に含まれる語での誤発火を防ぐ） ──
+    if step in (STATE_START, STATE_POST_CONSULT) and detect_check_keyword(user_text):
         user_state[user_id] = {"step": STATE_Q1}
         save_state(user_state)
         return Q.get("Q1", "A・B・Cのタイプと、困っている動作を教えてください。")
@@ -184,10 +187,6 @@ def handle_conversation(user_id, user_text):
             save_state(user_state)
             return get_response("CTA_PAID")
         return None  # 手動対応中はボットは返信しない
-
-    # 完全手動モード（自動返信なし）
-    if step == STATE_MANUAL:
-        return None
 
     # 有料誘導モード（何を送っても支払いリンクを案内）
     if step == STATE_POST_CONSULT:
