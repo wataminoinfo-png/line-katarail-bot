@@ -147,12 +147,6 @@ def detect_type_from_q1(text):
 
     return type_char, dousa
 
-TYPE_TO_RESPONSE_KEY = {
-    "a": "R_TYPE_A",
-    "b": "R_TYPE_B",
-    "c": "R_TYPE_C",
-}
-
 # ── 会話ハンドラ ──
 def handle_conversation(user_id, user_text):
     if user_id not in user_state:
@@ -194,27 +188,21 @@ def handle_conversation(user_id, user_text):
             return get_response("CTA_PAID")
         return get_response("R_NUDGE_PAID")
 
-    # Q1：A/B/Cタイプ判定 ＋ 動作抽出
+    # Q1：どんな回答でも受け付ける（A/B/Cは取れたら記録するだけ。強制しない）
     if step == STATE_Q1:
         type_char, dousa = detect_type_from_q1(user_text)
-        if type_char is None:
-            # 判定失敗 → 再質問（STATE_Q1のまま）
-            return Q.get("Q1_RETRY", "A・B・Cのどれか一文字だけでも大丈夫です。「Aで、服を着るとき」のように返信してください。")
-        # 判定成功
-        user_state[user_id]["type"] = type_char
-        user_state[user_id]["dousa"] = dousa
+        user_state[user_id]["type"] = type_char or "free"
+        user_state[user_id]["dousa"] = dousa if type_char else user_text
         user_state[user_id]["step"] = STATE_Q2
         save_state(user_state)
         return Q.get("Q2", "今の肩の状態を、家族や友人に説明するとしたら、どう話しますか？")
 
-    # Q2：どんなテキストでも受け付けてタイプ別最終返信を送信
+    # Q2：どんなテキストでも受け付けて共通の完了メッセージを送信
+    # （「一文に整理して返す」仕上げは、みのるが会話履歴を読んで手動で行う）
     if step == STATE_Q2:
-        type_char = state.get("type", "a")
-        dousa = state.get("dousa", "その動作")
-        response_key = TYPE_TO_RESPONSE_KEY.get(type_char, "R_TYPE_A")
         user_state[user_id] = {"step": STATE_START}
         save_state(user_state)
-        return get_response(response_key, dousa=dousa)
+        return get_response("R_CHECK_DONE")
 
     # どのステップでも「相談したい」→ 手動対応モードへ
     if detect_consult_keyword(user_text):
