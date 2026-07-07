@@ -1,7 +1,7 @@
 import os
 import json
 import re
-from flask import Flask, request, abort
+from flask import Flask, request, abort, send_from_directory
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
@@ -22,7 +22,8 @@ LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 
-PDF_URL = "https://1drv.ms/b/c/e003a8697c0a8817/IQD-1YbBKffuQJndCRWHIMXMAcQq2qv2DvFlfW4qPyEVSpI?e=JCT9ws"
+PDF_URL = "https://line-katarail-bot.onrender.com/tokuten.pdf"
+PDF_FILENAME = "katarail_tokuten_v5.pdf"
 
 # ── コンテンツ読み込み ──
 CONTENT_DIR = os.path.join(os.path.dirname(__file__), "content")
@@ -252,6 +253,15 @@ def handle_follow(event):
                 messages=[TextMessage(text=pdf_msg)],
             )
         )
+
+
+@app.route("/tokuten.pdf")
+def tokuten_pdf():
+    return send_from_directory(
+        os.path.dirname(os.path.abspath(__file__)),
+        PDF_FILENAME,
+        mimetype="application/pdf",
+    )
 
 
 @app.route("/callback", methods=["POST"])
