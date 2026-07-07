@@ -171,6 +171,14 @@ def handle_conversation(user_id, user_text):
         save_state(user_state)
         return Q.get("Q1", "A・B・Cのタイプと、困っている動作を教えてください。")
 
+    # ── チェック結果の直接送信（「Aで、服を着るとき」形式）→ Q1を飛ばしてQ2へ ──
+    #    文頭がA/B/C＋区切りのときだけ反応（誤発火防止）
+    if step == STATE_START and re.match(r'^\s*[AaＡａBbＢｂCcＣｃ]([でにはがとも、。,\s　]|$)', user_text):
+        type_char, dousa = detect_type_from_q1(user_text)
+        user_state[user_id] = {"step": STATE_Q2, "type": type_char, "dousa": dousa}
+        save_state(user_state)
+        return Q.get("Q2", "今の肩の状態を、家族や友人に説明するとしたら、どう話しますか？")
+
     # 手動対応モード（3回メッセージ後に自動で支払いリンクを送信）
     if step == STATE_CONSULT:
         count = state.get("consult_count", 0) + 1
@@ -215,10 +223,9 @@ def handle_conversation(user_id, user_text):
     save_state(user_state)
     return (
         "メッセージありがとうございます。\n\n"
-        "30秒チェックの続きは「現在地」、\n"
+        "チェックの結果は「Aで、服を着るとき」のように、\n"
         "個別のご相談は「相談したい」と送ってください。\n\n"
-        "このLINEでは、回復に役立つ話を\n"
-        "不定期で配信していきます。"
+        "肩に役立つ話を、ときどきこのLINEで配信します。"
     )
 
 
